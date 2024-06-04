@@ -1,0 +1,8 @@
+/home/artemoz/Study/LinuxLab/lab8/build/CMakeFiles/edit_cache.dir
+/home/artemoz/Study/LinuxLab/lab8/build/CMakeFiles/rebuild_cache.dir
+/home/artemoz/Study/LinuxLab/lab8/build/server/CMakeFiles/server.dir
+/home/artemoz/Study/LinuxLab/lab8/build/server/CMakeFiles/edit_cache.dir
+/home/artemoz/Study/LinuxLab/lab8/build/server/CMakeFiles/rebuild_cache.dir
+/home/artemoz/Study/LinuxLab/lab8/build/client/CMakeFiles/client.dir
+/home/artemoz/Study/LinuxLab/lab8/build/client/CMakeFiles/edit_cache.dir
+/home/artemoz/Study/LinuxLab/lab8/build/client/CMakeFiles/rebuild_cache.dir
