@@ -1,8 +1,8 @@
 CC = gcc
 .PHONY: clean
 
-all: program
-program: main.c List.c makefile
-	$(CC) main.c List.c -o program
+all: lab3
+lab3: main.c makefile
+	$(CC) main.c -o lab3
 clean:
-	rm program
+	rm lab3

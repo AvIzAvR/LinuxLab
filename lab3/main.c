@@ -1,245 +1,244 @@
 #include <unistd.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <locale.h>
 
-#include "List.h"
+int total_processes = 0;
 
-#define GREEN_COLOR "\033[1;32m"
-#define RED_COLOR "\033[1;31m"
-#define RESET_COLOR "\033[0m"
+typedef struct _STATS {
+    int primary;
+    int secondary;
+} STATS;
+STATS stats;
 
-#define CYCLE_RESTARTS 10
-#define ALARM_CLOCK_MSEC 500000
-#define P_TIME 5
+int process_statistics[4] = {0, 0, 0, 0};
 
-int num_process = 0;
+bool collect_statistics = true;
+bool display_statistics = true;
+bool global_flag = true;
 
-typedef struct _STAT {
-    int first;
-    int second;
-} STAT;
+pid_t process_queue[100];
+int queue_size = 0;
 
-STAT stat;
-int statistic[4] = {0, 0, 0, 0};
-bool is_collect = true;
-bool is_print = true;
-
-bool is_g = true;
-
-List* head = NULL, *tail = NULL;
-
-void get_statistic();
-void stat_alternation();
-void print_statistic();
-void new_process();
-void prohibit_print();
-void allow_print();
-void signal_to_process(int signum, int num);
-void set_g();
+void terminate_all_processes();
+void fetch_process_statistics();
+void switch_stats();
+void show_process_statistics();
+void spawn_new_process();
+void disable_display_statistics();
+void enable_display_statistics();
+void send_signal_to_process(int signal_num, int process_num);
+void set_global_flag();
 
 int main() {
     setlocale(LC_ALL, "");
 
-    signal(SIGUSR1, prohibit_print);
-    signal(SIGUSR2, allow_print);
-    signal(SIGINT, print_statistic);
-    signal(SIGALRM, set_g);
+    signal(SIGUSR1, disable_display_statistics);
+    signal(SIGUSR2, enable_display_statistics);
+    signal(SIGINT, show_process_statistics);
+    signal(SIGALRM, set_global_flag);
 
-    pid_t process;
+    pid_t process_id;
 
-    bool is_break = false;
-    int key;
-    while(!is_break) {
-        key = (int)getchar();
-        switch (key) {
+    bool terminate_flag = false;
+    int input_key;
+    while (!terminate_flag) {
+        input_key = (int)getchar();
+        switch (input_key) {
             case '+': {
-                process = fork();
-                if(process == 0) {
-                    signal(SIGALRM, get_statistic);
-                    new_process();
-                }
-                else if(process == -1) {
-                    perror(": error of created new process.\n");
-                }
-                else {
-                    add_last(&head, &tail, process);
-                    printf("New process is created "RED_COLOR"C_%d\n"RESET_COLOR, num_process);
-                    num_process++;
+                process_id = fork();
+                if (process_id == 0) {
+                    signal(SIGALRM, fetch_process_statistics);
+                    spawn_new_process();
+                } else if (process_id == -1) {
+                    perror("Error spawning new process.\n");
+                } else {
+                    process_queue[queue_size] = process_id;
+                    queue_size++;
+                    printf("New process is spawned C_%d\n", total_processes);
+                    total_processes++;
                 }
                 break;
             }
             case '-': {
-                if(num_process == 0) {
-                    printf("Process is not created.\n");
+                if (total_processes == 0) {
+                    printf("No process spawned.\n");
                 } else {
-                    kill(tail->data, SIGKILL);
-                    remove_last(&head, &tail);
-                    num_process--;
-
-                    printf(GREEN_COLOR"C_%d"RESET_COLOR " is successfully killed."RED_COLOR" %d"RESET_COLOR " child are still alive\n",
-                            num_process , num_process);
+                    kill(process_queue[queue_size - 1], SIGKILL);
+                    queue_size--;
+                    total_processes--;
+                    printf("C_%d is successfully terminated. %d child are still alive\n", total_processes, total_processes);
                 }
                 break;
             }
             case 'l': {
-                printf(GREEN_COLOR"Parent: %d\n"RESET_COLOR, getppid());
-                print_list(head);
+                printf("Parent: %d\n", getppid());
+                if (queue_size != 0) {
+                    printf("Process queue: ");
+                    for (int i = 0; i < queue_size; i++) {
+                        printf("%d ", process_queue[i]);
+                    }
+                    printf("\n");
+                }
                 break;
             }
             case 'k': {
-                free_list(head);
-                printf("All process is"RED_COLOR" killed.\n"RESET_COLOR);
-                num_process = 0;
+                if (queue_size == 0) {
+                    printf("No process spawned.\n");
+                } else {
+                    queue_size = 0;
+                    printf("All processes are terminated.\n");
+                    total_processes = 0;
+                }
                 break;
             }
             case 's': {
-                if(num_process == 0) {
-                    printf("Process is not created.\n");
+                if (queue_size == 0) {
+                    printf("No process spawned.\n");
                 } else {
-                    int num;
-                    printf("Enter num of process or 0 for all: ");
-                    scanf("%d", &num);
+                    int process_num;
+                    printf("Enter process number or 0 for all: ");
+                    scanf("%d", &process_num);
 
-                    if(num < 0 || num > num_process) {
+                    if (process_num < 0 || process_num > total_processes) {
                         printf("No such process.\n");
                     } else {
-                        signal_to_process(SIGUSR1, num);
+                        send_signal_to_process(SIGUSR1, process_num);
                     }
                 }
                 break;
             }
             case 'g': {
-                if(num_process == 0) {
-                    printf("Process is not created.\n");
+                if (queue_size == 0) {
+                    printf("No process spawned.\n");
                 } else {
-                    int num;
-                    printf("Enter num of process or 0 for all: ");
-                    scanf("%d", &num);
+                    int process_num;
+                    printf("Enter process number or 0 for all: ");
+                    scanf("%d", &process_num);
 
-                    if(num < 0 || num > num_process) {
+                    if (process_num < 0 || process_num > total_processes) {
                         printf("No such process.\n");
                     } else {
-                        is_g = true;
-                        signal_to_process(SIGUSR2, num);
+                        global_flag = true;
+                        send_signal_to_process(SIGUSR2, process_num);
                     }
                 }
                 break;
             }
             case 'p': {
-                if(num_process == 0) {
-                    printf("Process is not created.\n");
+                if (queue_size == 0) {
+                    printf("No process spawned.\n");
                 } else {
-                    int num;
-                    printf("Enter num of process for get statistic: ");
-                    scanf("%d", &num);
+                    int process_num;
+                    printf("Enter process number for fetching process statistics: ");
+                    scanf("%d", &process_num);
 
-                    if(num < 0 || num > num_process) {
+                    if (process_num < 0 || process_num > total_processes) {
                         printf("No such process.\n");
                     } else {
-                        signal_to_process(SIGUSR1, 0);
+                        send_signal_to_process(SIGUSR1, 0);
 
-                        is_g = false;
-                        alarm(P_TIME);
-                        signal_to_process(SIGINT, num);
+                        global_flag = false;
+                        alarm(5);
+                        send_signal_to_process(SIGINT, process_num);
                     }
                 }
                 break;
             }
             case 'q': {
-                free_list(head);
-                is_break = true;
+                terminate_all_processes();
+                terminate_flag = true;
                 break;
             }
-            default: break;
+            default:
+                break;
         }
     }
 
-    return 1;
+    return 0;
 }
 
-void get_statistic() {
-    is_collect = false;
-    if(stat.first == 0 && stat.second == 0) {
-        statistic[0]++;
+void terminate_all_processes() {
+    for (int i = 0; i < queue_size; i++) {
+        kill(process_queue[i], SIGKILL);
+        total_processes--;
     }
-    else if(stat.first == 0 && stat.second == 1) {
-        statistic[1]++;
-    }
-    else if(stat.first == 1 && stat.second == 0) {
-        statistic[2]++;
-    }
-    else if(stat.first == 1 && stat.second == 1) {
-        statistic[3]++;
-    }
+    queue_size = 0;
 }
 
-void stat_alternation() {
-    if(stat.first == 0 && stat.second == 0
-        || stat.first == 1 && stat.second == 0) {
-        stat.second++;
+void fetch_process_statistics() {
+    collect_statistics = false;
+    if(stats.primary == 0 && stats.secondary == 0) {
+        process_statistics[0]++;
     }
-    else if(stat.first == 0 && stat.second == 1) {
-        stat.second--;
-        stat.first++;
-    }
-    else if(stat.first == 1 && stat.second == 1) {
-        stat.second--;
-        stat.first--;
+    else if(stats.primary == 1 && stats.secondary == 1) {
+        process_statistics[3]++;
     }
 }
 
-void prohibit_print() {
-    is_print = false;
+void switch_stats() {
+    if(stats.primary == 0 && stats.secondary == 0) {
+        stats.primary++;
+        stats.secondary++;
+    }
+    else if(stats.primary == 1 && stats.secondary == 1) {
+        stats.secondary--;
+        stats.primary--;
+    }
 }
 
-void allow_print() {
-    is_print = true;
+void disable_display_statistics() {
+    display_statistics = false;
 }
 
-void print_statistic() {
-    printf("Statistic of process "RED_COLOR"C_%d"RESET_COLOR" pid"GREEN_COLOR" %d"RESET_COLOR" : {0, 0} - %d; {0, 1} - %d; {1, 0} - %d; {1, 1} - %d\n",
-            num_process ,getpid(), statistic[0], statistic[1], statistic[2], statistic[3]);
+void enable_display_statistics() {
+    display_statistics = true;
 }
 
-void new_process() {
-    ualarm(ALARM_CLOCK_MSEC, ALARM_CLOCK_MSEC);
+void show_process_statistics() {
+    printf("Process statistics: C_%d\n", getpid());
+    for (int i = 0; i < 4; i++) {
+        printf("Process type %d: %d\n", i+1, process_statistics[i]);
+    }
+}
 
-    int cycle_res = CYCLE_RESTARTS;
+void spawn_new_process() {
+    ualarm(500000, 500000);
+
+    int cycle_restart = 10;
     while(true) {
-        while(is_collect) {
-            stat_alternation();
+        while(collect_statistics) {
+            switch_stats();
         }
-        is_collect = true;
+        collect_statistics = true;
 
-        cycle_res--;
-        if(cycle_res == 0) {
-            if(is_print) {
-                print_statistic();
+        cycle_restart--;
+        if(cycle_restart == 0) {
+            if(display_statistics) {
+                show_process_statistics();
             }
-            cycle_res = CYCLE_RESTARTS;
+            cycle_restart = 10;
         }
     }
 }
 
-void signal_to_process(int signum, int num) {
-    List* temp = head;
-    int i = 1;
-    while(temp != NULL) {
-        if(num == 0 || i == num) {
-            kill(temp->data, signum);
+void send_signal_to_process(int signal_num, int process_num) {
+    if (process_num == 0) {
+        for (int i = 0; i < queue_size; i++) {
+            kill(process_queue[i], signal_num);
         }
-
-        i++;
-        temp = temp->next;
+    } else {
+        kill(process_queue[process_num - 1], signal_num);
     }
 }
 
-void set_g() {
-    if(!is_g) {
-        signal_to_process(SIGUSR2, 0);
+void set_global_flag() {
+    if(!global_flag) {
+        send_signal_to_process(SIGUSR2, 0);
     }
 
-    is_g = true;
+    global_flag = true;
 }

@@ -1,200 +1,234 @@
 #include <stdio.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <semaphore.h>
 #include <unistd.h>
-#include <sys/types.h>
+#include <signal.h>
 #include <sys/wait.h>
 #include <fcntl.h>
-#include "ring.h"
-#include "list.h"
-#include <time.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <string.h>
+#include <errno.h>
+#include <stddef.h>
+#include <inttypes.h>
+#include "message.h"
+#include "queue.h"
 
-#define BUFFER_SIZE 6
+queue_t *queue;
+sem_t *mutex;
 
-enum structure_of_message {
-    TYPE = 0,
-    HIGH_BYTE_HASH = 1,
-    LOW_BYTE_HASH = 2,
-    SIZE = 3,
-    DATA_BEGIN = 4
-};
+sem_t *free_space;
+sem_t *items;
 
-sem_t* SEMAPHORE_EMPTY;
-sem_t* SEMAPHORE_FILLED;
-sem_t* SEMAPHORE_MUTEX;
-bool FLAG_CONTINUE = true;
+pid_t producers[1024];
+int producers_amount;
 
-u_int16_t control_sum(const u_int8_t*, size_t);
-void producer(int32_t);
-void consumer(int32_t);
-u_int8_t* generate_message();
-void handler_stop_proc();
-void display_message(const u_int8_t* message);
-void delete_all_child_proc(node_list* head);
+pid_t consumers[1024];
+int consumers_amount;
 
-int main() {
-    signal(SIGUSR1, handler_stop_proc);
+static pid_t parent_pid;
 
-    sem_unlink("SEMAPHORE_FILLED");
-    sem_unlink("SEMAPHORE_EMPTY");
-    sem_unlink("SEMAPHORE_MUTEX");
+bool temp = false;
 
-    SEMAPHORE_FILLED = sem_open("SEMAPHORE_FILLED", O_CREAT, 0777, 0);
-    SEMAPHORE_EMPTY = sem_open("SEMAPHORE_EMPTY", O_CREAT, 0777, BUFFER_SIZE);
-    SEMAPHORE_MUTEX = sem_open("SEMAPHORE_MUTEX", O_CREAT, 0777, 1);
-
-    ring_shared_buffer* ring_queue = NULL;
-    node_list* list_child_process = NULL;
-    push_list(&list_child_process, getpid(), '-');
-
-    for (size_t i = 0; i < BUFFER_SIZE; ++i)
-        append(&ring_queue);
-
-    printf("Shmid segment : %d\n", ring_queue->shmid);
-
-    int status;
-
-    do {
-        char ch = getchar();
-        switch(ch) {
-            case 'p' : {
-                pid_t pid = fork();
-                if (pid == 0) { producer(ring_queue->shmid); }
-                else { push_list(&list_child_process, pid, 'P'); }
-                break;
-            }
-            case 'c' : {
-                pid_t pid = fork();
-                if (pid == 0) {  consumer(ring_queue->shmid); }
-                else { push_list(&list_child_process, pid, 'C');   }
-                break;
-            }
-            case 'l' : {
-                display_list(list_child_process);
-                break;
-            }
-            case 'k' : {
-                size_t num;
-                scanf("%lu", &num);
-                if (num == 0) { printf("This process is not a child process.\n"); }
-                 else {
-                     pid_t pid = erase_list(&list_child_process, num);
-                     if (pid != -1) kill(pid, SIGUSR1);
-                 }
-                break;
-            }
-            case 'q' : {
-                delete_all_child_proc(list_child_process);
-                clear_shared_memory(ring_queue);
-                FLAG_CONTINUE = false;
-                break;
-            }
-            default : {
-                printf("Incorrect input.\n");
-                fflush(stdin); break;
-            }
-        }
-        waitpid(-1, &status, WNOHANG);
-        getchar();
-    }while(FLAG_CONTINUE);
-
-    sem_unlink("SEMAPHORE_FILLED");
-    sem_unlink("SEMAPHORE_EMPTY");
-    sem_unlink("SEMAPHORE_MUTEX");
-
-    sem_close(SEMAPHORE_MUTEX);
-    sem_close(SEMAPHORE_EMPTY);
-    sem_close(SEMAPHORE_FILLED);
-
-    return 0;
+void handler(int sig)
+{
+    temp = true;
 }
 
-void delete_all_child_proc(node_list* head) {
-    //shmdt (ring_queue)
-    while(head->next) {
-        pid_t pid = pop_list(&head);
-        kill(pid, SIGKILL);
+void new_process(pid_t *list, int *count, void (*func)(void))
+{
+    if (*count == 1023)
+    {
+        fprintf(stderr, "Max value of processes\n");
+        return;
     }
-    printf("All child processes are deleted.\n");
-}
 
-u_int16_t control_sum(const u_int8_t* data, size_t length) {
-    u_int16_t hash = 0;
-    for (size_t i = 0; i < length; ++i) {
-        hash += data[i];
+    pid_t pid = fork();
+
+    if (pid == -1)
+    {
+        perror("fork");
+        exit(1);
     }
-    return hash;
-}
-
-u_int8_t* generate_message() {
-    srand(time(NULL));
-    u_int8_t* result_message = (u_int8_t*)calloc(LEN_MESSAGE , sizeof(u_int8_t));
-    size_t size = 0;
-    size_t data_size = 0;
-    while(size == 0) size = rand() % 257;
-    if (size == 256) {
-        size = 0;
-        data_size = 256;
-    }else {
-        data_size = ((size + 3) / 4) * 4;
+    else if (pid == 0)
+    {
+        func();
     }
-    for (size_t i = DATA_BEGIN; i < data_size; ++i) {
-        result_message[i] = rand() % 256;
+    else
+    {
+        list[*count] = pid;
+        ++(*count);
+        return;
     }
-    u_int16_t hash = control_sum(result_message, size);
-    result_message[TYPE] = 1;
-    result_message[HIGH_BYTE_HASH] = (hash >> 8) & 0xFF;
-    result_message[LOW_BYTE_HASH] = hash & 0xFF;
-    result_message[SIZE] = size;
-    return result_message;
 }
 
-void display_message(const u_int8_t* message) {
-    size_t message_size = 0;
-    if (message[SIZE] == 0) {
-        message_size = LEN_MESSAGE;
-    }else {
-        message_size = message[SIZE] + OFFSET;
+void close_process(pid_t *list, int *count)
+{
+    if (*count == 0)
+    {
+        fprintf(stderr, "No process to delete\n");
+        return;
     }
-    for (size_t i = 0; i < message_size; ++i)
-        printf("%02X", message[i]);
-    printf("\n");
+
+    (*count)--;
+    kill(list[*count], SIGUSR1);
+    wait(NULL);
 }
 
-void handler_stop_proc() {
-    FLAG_CONTINUE = false;
+void init()
+{
+    parent_pid = getpid();
+
+    int fd = shm_open("/queue", (O_RDWR | O_CREAT | O_TRUNC), (S_IRUSR | S_IWUSR));
+    if (fd < 0)
+    {
+        perror("shm_open");
+        exit(1);
+    }
+
+    if (ftruncate(fd, sizeof(queue_t)))
+    {
+        perror("ftruncate");
+        exit(1);
+    }
+
+    void *ptr = mmap(NULL, sizeof(queue_t), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (ptr == MAP_FAILED)
+    {
+        perror("mmap");
+        exit(1);
+    }
+
+    queue = (queue_t *)ptr;
+    new_queue(queue);
+
+    if (close(fd))
+    {
+        perror("close");
+        exit(1);
+    }
+
+    if ((mutex = sem_open("mutex", (O_RDWR | O_CREAT | O_TRUNC), (S_IRUSR | S_IWUSR), 1)) == SEM_FAILED ||
+        (free_space = sem_open("free_space", (O_RDWR | O_CREAT | O_TRUNC), (S_IRUSR | S_IWUSR), 4096)) == SEM_FAILED ||
+        (items = sem_open("items", (O_RDWR | O_CREAT | O_TRUNC), (S_IRUSR | S_IWUSR), 0)) == SEM_FAILED)
+    {
+        perror("sem_open");
+        exit(1);
+    }
 }
 
-void consumer(int32_t shmid) {
-    ring_shared_buffer* queue = shmat(shmid, NULL, 0);
-    do {
-        sem_wait(SEMAPHORE_FILLED);
-        sem_wait(SEMAPHORE_MUTEX);
-        sleep(2);
-        u_int8_t* message = extract_message(queue);
-        sem_post(SEMAPHORE_MUTEX);
-        sem_post(SEMAPHORE_EMPTY);
-        display_message(message);
-        free(message);
-        printf("Consumed from CHILD with PID = %d\n", getpid());
-        printf("Total messages retrieved = %lu\n", queue->consumed);
-    }while(FLAG_CONTINUE);
-    shmdt(queue);
+void end()
+{
+    for (size_t i = 0; i < producers_amount; ++i)
+    {
+        kill(producers[i], SIGKILL);
+        wait(NULL);
+    }
+    for (size_t i = 0; i < consumers_amount; ++i)
+    {
+        kill(consumers[i], SIGKILL);
+        wait(NULL);
+    }
+
+    if (shm_unlink("/queue"))
+    {
+        perror("shm_unlink");
+        abort();
+    }
+    if (sem_unlink("mutex") ||
+        sem_unlink("free_space") ||
+        sem_unlink("items"))
+    {
+        perror("sem_unlink");
+        abort();
+    }
+
+    kill(parent_pid, SIGKILL);
 }
 
-void producer(int32_t shmid) {
-    ring_shared_buffer* queue = shmat(shmid, NULL, 0);
-    do {
-        sem_wait(SEMAPHORE_EMPTY);
-        sem_wait(SEMAPHORE_MUTEX);
-        sleep(2);
-        u_int8_t* new_message = generate_message();
-        add_message(queue, new_message);
-        sem_post(SEMAPHORE_MUTEX);
-        sem_post(SEMAPHORE_FILLED);
-        free(new_message);
-        printf("Produced from CHILD with PID = %d\n", getpid());
-        printf("Total ojbects created = %lu\n", queue->produced);
-    }while(FLAG_CONTINUE);
-    shmdt(queue);
+void producer_process()
+{
+    srand(getpid());
+
+    signal(SIGUSR1, handler);
+    msg_t msg;
+    int add_count_local;
+    while (true)
+    {
+        new_msg(&msg);
+        sem_wait(free_space);
+        sem_wait(mutex);
+
+        add_count_local = push(queue, &msg);
+        sem_post(mutex);
+        sem_post(items);
+
+        printf("%d produce msg_t: hash=%X, added_amount=%d\n",
+               getpid(), msg.hash, add_count_local);
+        if (temp)
+            exit(0);
+        sleep(4);
+    }
+}
+
+void consumer_process()
+{
+    signal(SIGUSR1, handler);
+    msg_t msg;
+    int extract_count_local;
+    while (true)
+    {
+        sem_wait(items);
+        sem_wait(mutex);
+
+        extract_count_local = pop(queue, &msg);
+
+        sem_post(mutex);
+        sem_post(free_space);
+
+        handle_msg(&msg);
+
+        printf("%d consume msg_t: hash=%X, extracted_amount=%d\n",
+               getpid(), msg.hash, extract_count_local);
+        if (temp)
+            exit(0);
+        sleep(4);
+    }
+}
+
+int main()
+{
+    init();
+
+    signal(SIGKILL, end);
+    signal(SIGTERM, end);
+    signal(SIGINT, end);
+
+    printf("Enter: \n"
+           "p: new producer\n"
+           "d: delete producer\n"
+           "c: new consumer\n"
+           "r: delete consumer\n"
+           "q: exit\n");
+    while (true)
+    {
+        char operation = getchar();
+        if (operation == 'p')
+            new_process(producers, &producers_amount, producer_process);
+        else if (operation == 'd')
+            close_process(producers, &producers_amount);
+        else if (operation == 'c')
+            new_process(consumers, &consumers_amount, consumer_process);
+        else if (operation == 'r')
+            close_process(consumers, &consumers_amount);
+        else if (operation == 'q')
+            break;
+        else if (operation == '\n')
+            continue;
+        else
+            printf("Unknown operator");
+    }
+    end();
+    exit(0);
 }
